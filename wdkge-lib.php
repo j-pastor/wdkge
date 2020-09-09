@@ -7,7 +7,6 @@ function init($output, $end_level, $language_labels, $links_wikisites) {
 	# Define global configuration variables
 	$conf=array();
 	$conf["wikidata_endpoint"]="https://query.wikidata.org/sparql";
-
 	$conf["file_csv_output"]=fopen("results/".$output.".csv","w");
 	$conf["file_owl_output"]=fopen("results/".$output.".ttl","w");
 	$conf["file_gml_output"]=fopen("results/".$output.".gml","w");
@@ -49,7 +48,7 @@ function init($output, $end_level, $language_labels, $links_wikisites) {
 	$conf["found_wplinks"]=array();
 	$conf["nodes"]=array();
 	$conf["edges"]=array();
-
+	$conf["properties"]=array();
 	$conf["config_sections"] = array(
 		"start_items"=>"Start items",
 		"leaf_items"=>"Leaf items",
@@ -87,7 +86,6 @@ function init($output, $end_level, $language_labels, $links_wikisites) {
 	return($conf);
 }
 
-
 # Get links and backlinks of wikipedia pages for every start items
 function get_l_bl($conf) {
 	$link_types=array(
@@ -95,7 +93,7 @@ function get_l_bl($conf) {
 		"backlinks"=>array("title"=>"gbltitle","prefix"=>"gbl")
 	);
 	foreach ($conf["start_items"] as $q) {
-		echo "\n>>>>>>>>>>>>>>>>>>>>>> Processing links and backlinks for ".$q;
+		echo "\n>>>>>>>>>>>>>>>>>>>>>> Processing links and backlinks for ".$q." "; // verbose
 		$item=get_entity($q);
 		foreach ($link_types as $type=>$wplinks) {
 
@@ -119,6 +117,7 @@ function get_l_bl($conf) {
 					} else {
 						$repeat_query=false;
 					}
+					echo ">";
 				}
 			}
 		}
@@ -181,6 +180,21 @@ function generate_graph($conf) {
 						}
 					}';
 
+				/* $wikidata_query='SELECT ?subject ?subjectLabel ?prop ?propLabel ?object ?objectLabel WHERE {';
+				for ($t=0; $index_current_item+$t<$number_items_in_tail and $t<10;$t++) {
+					$current_item = $tail_items[$index_current_item+$t];
+					$wikidata_query.='{BIND(wd:'.$current_item.' AS ?subject) 
+						?subject ?p ?object. 
+						?prop wikibase:directClaim ?p .}';
+					if ($t<9 and $index_current_item+$t<$number_items_in_tail-1) {$wikidata_query.=" UNION ";}
+				}
+				$index_current_item=$index_current_item+$t-1;
+				$wikidata_query.='FILTER(STRSTARTS(STR(?object), "http://www.wikidata.org/entity/Q"))
+					SERVICE wikibase:label {
+							bd:serviceParam wikibase:language "en,es".
+						}
+					} order by ?subject'; */
+
 				$results=sparql_query($conf["wikidata_endpoint"],$wikidata_query,"json");
 				$is_minus_by_class = false;
 				$is_exception=false;
@@ -195,11 +209,13 @@ function generate_graph($conf) {
 					$prop_entity = str_replace("http://www.wikidata.org/entity/","",$triplet["prop"]["value"]);
 
 
+					# Check if current item is a RICH LEAF BY ITEM
 					if (in_array($subject_entity,$conf["leaf_items"])) {
 						$is_rich_leaf_byitem=true;
 						$processing_type="rich_leaf_byitem";
 					}
 
+					# Check if current item is a RICH LEAF BY CLASS
 					if (in_array($prop_entity,$conf["required_leaf_properties"]) and in_array($object_entity,$conf["leaf_class"])) {
 						$is_rich_leaf_byclass=true;
 						$processing_type="rich_leaf_byclass";
@@ -210,6 +226,7 @@ function generate_graph($conf) {
 						$processing_type="simple_leaf_byclass";
 					}
 
+					# Check if current item is a MINUS CLASS EXCEPTION
 					if (in_array($prop_entity,$conf["required_leaf_properties"]) and in_array($object_entity,$conf["minus_class_exceptions"])) {
 						$is_minus_by_class=false;
 						$is_exception=true;
@@ -326,36 +343,18 @@ function generate_graph($conf) {
 							# Create graph
 							$conf["nodes"][$subject_entity]["label"]=$subject_label;
 							$conf["nodes"][$object_entity]["label"]=$object_label;
-							$conf["nodes"][$subject_entity]["level"]=$level_loop;
-							$conf["nodes"][$object_entity]["level"]=$level_loop+1;
-							$conf["edges"][]=array("source"=>$subject_entity,"target"=>$object_entity,"property"=>$prop_entity,"label"=>$prop_label);
-							
-							# CSV output
+							if (!isset($conf["nodes"][$subject_entity]["level"])) {$conf["nodes"][$subject_entity]["level"]=$level_loop;}
+							if (!isset($conf["nodes"][$object_entity]["level"])) {$conf["nodes"][$object_entity]["level"]=$level_loop+1;}
+							$conf["properties"][$prop_entity]["label"]=$prop_label;
+							if (!isset($conf["edges"][$subject_entity][$object_entity][$prop_entity])) {
+								$conf["edges"][$subject_entity][$object_entity][$prop_entity]=true;
+							}
+
+							# Verbose output
 							$output="";
 							$output=$level_loop."\t".$subject_entity."\t".$subject_label."\t".$prop_entity."\t".$prop_label."\t".$object_entity."\t".$object_label."\t".$leaf_node."\t".$validated_by_link."\t".$validated_by_backlink."\n";
-							if (isset($conf["output_csv"][$subject_entity."-".$prop_entity."-".$object_entity])) {
-								unset($conf["output_csv"][$subject_entity."-".$prop_entity."-".$object_entity]);
-							}
-							$conf["output_csv"][$subject_entity."-".$prop_entity."-".$object_entity]=$output;
 							$conf["number_of_claims"]++;
 							echo ($index_current_item+1)."/".$number_items_in_tail." - ".$output;
-						
-							# OWL output
-							$output="";
-							$output.="wd:".$subject_entity." rdfs:subClassOf owl:Thing .\n";
-							$output.="wd:".$object_entity." rdfs:subClassOf owl:Thing .\n";
-							$output.="wdt:".$subject_entity.$prop_entity.$object_entity." rdf:type owl:ObjectProperty .\n";
-							$output.="wdt:".$subject_entity.$prop_entity.$object_entity." rdfs:domain wd:".$subject_entity." .\n";
-							$output.="wdt:".$subject_entity.$prop_entity.$object_entity." rdfs:range wd:".$object_entity." .\n";
-							$output.="wd:".$subject_entity." wdt:".$subject_entity.$prop_entity.$object_entity." wd:".$object_entity." .\n";
-							$output.="wd:".$subject_entity." rdfs:label \"".$subject_label."\" .\n";
-							$output.="wd:".$object_entity." rdfs:label \"".$object_label."\" .\n";
-							$output.="wdt:".$subject_entity.$prop_entity.$object_entity." rdfs:label \"".$prop_label."\" .\n";
-							if (isset($conf["output_owl"][$subject_entity."-".$prop_entity."-".$object_entity])) {
-								unset($conf["output_owl"][$subject_entity."-".$prop_entity."-".$object_entity]);
-							}
-							$conf["output_owl"][$subject_entity."-".$prop_entity."-".$object_entity]=$output;	
-
 						}
 					}
 				}
@@ -367,7 +366,10 @@ function generate_graph($conf) {
 	return($conf);
 }
 
-function enrich_with_wikilinks($conf,$q) {
+
+
+# Enrich with inverse relations (from X to start items = $q)
+function enrich_with_inverse($conf,$q) {
 
 	$wikidata_query='SELECT ?subject ?subjectLabel ?prop ?propLabel ?object ?objectLabel WHERE {
 		BIND(wd:'.$q.' AS ?object)
@@ -377,8 +379,10 @@ function enrich_with_wikilinks($conf,$q) {
 		SERVICE wikibase:label {bd:serviceParam wikibase:language "en,es".}
 	}';
 	$results=sparql_query($conf["wikidata_endpoint"],$wikidata_query,"json");
-
+	$index_current_item=0;
+	$number_items=count($results["results"]["bindings"]);
 	foreach ($results["results"]["bindings"] as $triplet) {
+		$index_current_item++;
 		$subject_entity = str_replace("http://www.wikidata.org/entity/","",$triplet["subject"]["value"]);
 		$object_entity = str_replace("http://www.wikidata.org/entity/","",$triplet["object"]["value"]);
 		$prop_entity = str_replace("http://www.wikidata.org/entity/","",$triplet["prop"]["value"]);
@@ -400,7 +404,6 @@ function enrich_with_wikilinks($conf,$q) {
 			}';
 
 			$results2=sparql_query($conf["wikidata_endpoint"],$wikidata_query,"json");
-
 			foreach ($results2["results"]["bindings"] as $triplet2) {
 				$subject_entity2 = str_replace("http://www.wikidata.org/entity/","",$triplet2["subject"]["value"]);
 				$object_entity2 = str_replace("http://www.wikidata.org/entity/","",$triplet2["object"]["value"]);
@@ -449,7 +452,6 @@ function enrich_with_wikilinks($conf,$q) {
 
 				$conf["wbr_number_of_claims"]++;
 
-
 				# For STATISTICS of distinct ITEMS and PROPERTIES
 				$conf["item_detected"][$subject_entity]=true;
 				$conf["item_detected"][$object_entity]=true;
@@ -458,33 +460,17 @@ function enrich_with_wikilinks($conf,$q) {
 				# Create graph
 				$conf["nodes"][$subject_entity]["label"]=$subject_label;
 				$conf["nodes"][$object_entity]["label"]=$object_label;
-				$conf["edges"][]=array("source"=>$subject_entity,"target"=>$object_entity,"property"=>$prop_entity,"label"=>$prop_label);
-				
-				# CSV output
-				$output="";
-				$output="WBR\t".$subject_entity."\t".$subject_label."\t".$prop_entity."\t".$prop_label."\t".$object_entity."\t".$object_label."\t".$leaf_node."\t".$validated_by_link."\t".$validated_by_backlink."\n";
-				if (isset($conf["output_csv"][$subject_entity."-".$prop_entity."-".$object_entity])) {
-					unset($conf["output_csv"][$subject_entity."-".$prop_entity."-".$object_entity]);
+				if (!isset($conf["nodes"][$subject_entity]["level"])) {$conf["nodes"][$subject_entity]["level"]=9999;}
+				$conf["properties"][$prop_entity]["label"]=$prop_label;
+				if (!isset($conf["edges"][$subject_entity][$object_entity][$prop_entity])) {
+					$conf["edges"][$subject_entity][$object_entity][$prop_entity]=true;
 				}
-				$conf["output_csv"][$subject_entity."-".$prop_entity."-".$object_entity]=$output;
+
+				# Verbose output
+				$output="";
+				$output="9999\t".$subject_entity."\t".$subject_label."\t".$prop_entity."\t".$prop_label."\t".$object_entity."\t".$object_label."\t".$leaf_node."\t".$validated_by_link."\t".$validated_by_backlink."\n";
 				$conf["number_of_claims"]++;
-				echo "WBR - ".$output;
-			
-				# OWL output
-				$output="";
-				$output.="wd:".$subject_entity." rdfs:subClassOf owl:Thing .\n";
-				$output.="wd:".$object_entity." rdfs:subClassOf owl:Thing .\n";
-				$output.="wdt:".$subject_entity.$prop_entity.$object_entity." rdf:type owl:ObjectProperty .\n";
-				$output.="wdt:".$subject_entity.$prop_entity.$object_entity." rdfs:domain wd:".$subject_entity." .\n";
-				$output.="wdt:".$subject_entity.$prop_entity.$object_entity." rdfs:range wd:".$object_entity." .\n";
-				$output.="wd:".$subject_entity." wdt:".$subject_entity.$prop_entity.$object_entity." wd:".$object_entity." .\n";
-				$output.="wd:".$subject_entity." rdfs:label \"".$subject_label."\" .\n";
-				$output.="wd:".$object_entity." rdfs:label \"".$object_label."\" .\n";
-				$output.="wdt:".$subject_entity.$prop_entity.$object_entity." rdfs:label \"".$prop_label."\" .\n";
-				if (isset($conf["output_owl"][$subject_entity."-".$prop_entity."-".$object_entity])) {
-					unset($conf["output_owl"][$subject_entity."-".$prop_entity."-".$object_entity]);
-				}
-				$conf["output_owl"][$subject_entity."-".$prop_entity."-".$object_entity]=$output;	
+				echo ($index_current_item+1)."/".$number_items." - ".$output;
 			}
 		}
 	}
@@ -504,17 +490,37 @@ function generate_owl($conf) {
 	fwrite($conf["file_owl_output"],"@base <http://www.wikidata.org/voc/coronavirus/> .\n");
 	fwrite($conf["file_owl_output"],"<http://www.wikidata.org/voc/coronavirus/> rdf:type owl:Ontology .\n");
 
-	foreach ($conf["output_owl"] as $output) {
-		fwrite($conf["file_owl_output"], $output);
-	} 
+	foreach ($conf["edges"] as $subject=>$object_prop) {
+		$output="";
+		$output.="wd:".$subject." rdfs:subClassOf owl:Thing .\n";
+		$output.="wd:".$subject." rdfs:label \"".$conf["nodes"][$subject]["label"]."\" .\n";
+		foreach ($object_prop as $object=>$prop_array) {
+			$output.="wd:".$object." rdfs:subClassOf owl:Thing .\n";
+			$output.="wd:".$subject." rdfs:label \"".$conf["nodes"][$object]["label"]."\" .\n";
+			foreach ($prop_array as $prop=>$value) {
+				$output.="wdt:".$subject.$prop.$object." rdf:type owl:ObjectProperty .\n";
+				$output.="wdt:".$subject.$prop.$object." rdfs:domain wd:".$subject." .\n";
+				$output.="wdt:".$subject.$prop.$object." rdfs:range wd:".$object." .\n";
+				$output.="wd:".$subject." wdt:".$subject.$prop.$object." wd:".$object." .\n";
+				$output.="wdt:".$subject.$prop.$object." rdfs:label \"".$conf["properties"][$prop]["label"]."\" .\n";
+			}
+		}
+		fwrite($conf["file_owl_output"],$output);
+	}
 }
-
 # Save final graph into CSV files (with statistics + links and backlinks usage)
 function generate_csv($conf) {
 
-	foreach ($conf["output_csv"] as $output) {
-		fwrite($conf["file_csv_output"], $output);
-	} 
+	foreach ($conf["edges"] as $subject=>$object_prop) {
+		foreach ($object_prop as $object=>$prop_array) {
+			foreach ($prop_array as $prop=>$value) {
+				$output="";
+				$output=$conf["nodes"][$subject]["level"]."\t".$subject."\t".$conf["nodes"][$subject]["label"]."\t";
+				$output.=$prop."\t".$conf["properties"][$prop]["label"]."\t".$object."\t".$conf["nodes"][$object]["label"]."\n";
+				fwrite($conf["file_csv_output"], $output);
+			}
+		}
+	}
 
 	fwrite($conf["file_csv_output"],"Q claims\t".$conf["number_of_claims"]."\n");
 	fwrite($conf["file_csv_output"],"WBR claims\t".$conf["wbr_number_of_claims"]."\n");
@@ -558,6 +564,7 @@ function generate_csv($conf) {
 	fwrite($conf["file_csv_output"],"Backlinks unused\t".$unused_count."\n");
 }
 
+# Save final graph into GML file
 function generate_gml($conf) {
 	fwrite($conf["file_gml_output"],"graph\n[\n  Creator \"Wikidata Graph Constructor\"\n  directed 1\n");
 	$node = array();
@@ -568,14 +575,23 @@ function generate_gml($conf) {
 		fwrite($conf["file_gml_output"],"  node\n  [\n    id \"".$item."\"\n    label \"".$node_data["label"]."\"\n  ]\n");
 	}
 
-	foreach ($conf["edges"] as $number=>$edge_data) {
-		fwrite($conf["file_gml_output"],"  edge\n  [\n    id ".$number."\n    source \"".$edge_data["source"].
-		"\"\n    target \"".$edge_data["target"]."\"\n    label \"".$edge_data["property"].":".$edge_data["label"]."\"\n  ]\n");
+	$number=0;
+	foreach ($conf["edges"] as $subject=>$object_prop) {
+		foreach ($object_prop as $object=>$prop_array) {
+			foreach ($prop_array as $prop=>$value) {
+				$number++;
+				$output="";
+				$output.="  edge\n  [\n    id ".$number."\n    source \"".$subject."\"\n    target \"".$object."\"\n    label \"".$prop.":".$conf["properties"][$prop]["label"]."\"\n  ]\n";
+				fwrite($conf["file_gml_output"],$output);
+			}
+		}
 	}
+
 	fwrite($conf["file_gml_output"],"]\n");
 	fclose($conf["file_gml_output"]);
 }
 
+# Save final graph into GEFX file
 function generate_gefx($conf) {
 	fwrite($conf["file_gexf_output"],'<?xml version="1.0" encoding="UTF-8"?>
   <gexf xmlns="http://www.gexf.net/1.3" version="1.3" xmlns:viz="http://www.gexf.net/1.3/viz" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.gexf.net/1.3 http://www.gexf.net/1.3/gexf.xsd">
@@ -591,9 +607,18 @@ function generate_gefx($conf) {
 	}
 	fwrite($conf["file_gexf_output"],'</nodes>'."\n");
 
-	fwrite($conf["file_gexf_output"],'<edges count="'.sizeof($conf["edges"]).'">'."\n");
-	foreach ($conf["edges"] as $number=>$edge_data) {
-		fwrite($conf["file_gexf_output"],'<edge id="'.$number.'" source="'.$edge_data["source"].'" target="'.$edge_data["target"].'" label="'.$edge_data["property"].":".$edge_data["label"].'" weight="1.0"/>'."\n");
+	fwrite($conf["file_gexf_output"],'<edges count="'.count($conf["edges"],COUNT_RECURSIVE).'">'."\n");
+
+	$number=0;
+	foreach ($conf["edges"] as $subject=>$object_prop) {
+		foreach ($object_prop as $object=>$prop_array) {
+			foreach ($prop_array as $prop=>$value) {
+				$number++;
+				$output="";
+				$output.='<edge id="'.$number.'" source="'.$subject.'" target="'.$object.'" label="'.$prop.":".$conf["properties"][$prop]["label"].'" weight="1.0"/>'."\n";
+				fwrite($conf["file_gexf_output"],$output);
+			}
+		}
 	}
 	fwrite($conf["file_gexf_output"],'</edges>'."\n");
 	fwrite($conf["file_gexf_output"],'</graph>'."\n");
@@ -601,7 +626,5 @@ function generate_gefx($conf) {
 	fclose($conf["file_gexf_output"]);
 }
 
+
 ?>
-
-
-
