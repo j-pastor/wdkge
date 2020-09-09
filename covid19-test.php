@@ -21,7 +21,7 @@
 	$conf=generate_graph($conf); // generate graph
 
 	foreach ($conf["start_items"] as $q) {
-		$conf=enrich_with_wikilinks($conf, $q); // enrich with inverse relations
+		// $conf=enrich_with_inverse($conf, $q); // enrich with inverse relations
 	}
 
 	// save results files
